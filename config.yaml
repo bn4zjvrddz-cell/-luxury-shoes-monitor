@@ -3,7 +3,7 @@ monitor:
   brands_per_cycle: 20
   request_delay_seconds: 1.0
   timeout_seconds: 20
-  max_items_per_brand: 20
+  max_items_per_brand: 50
   send_existing_on_first_run: false
 sources:
   olx: true
