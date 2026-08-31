@@ -1,0 +1,249 @@
+monitor:
+  interval_minutes: 5
+  brands_per_cycle: 20
+  request_delay_seconds: 1.0
+  timeout_seconds: 20
+  max_items_per_brand: 20
+  send_existing_on_first_run: false
+sources:
+  olx: true
+  shafa: true
+filters:
+  brands:
+  - name: Gucci
+    priority: true
+  - name: Prada
+    priority: true
+  - name: Fendi
+  - name: Car Shoe
+    olx_queries:
+    - Car Shoe
+    - Carshoe
+  - name: Valentino
+  - name: Dolce & Gabbana
+    olx_queries:
+    - Dolce Gabbana
+    - D&G
+    - D G
+  - name: Louis Vuitton
+    priority: true
+    olx_queries:
+    - Louis Vuitton
+    - LV
+  - name: Golden Goose
+  - name: Chanel
+    priority: true
+  - name: Dior
+    priority: true
+    olx_queries:
+    - Dior
+    - Christian Dior
+  - name: Brunello Cucinelli
+  - name: Bottega Veneta
+  - name: Jil Sander
+  - name: Acne Studios
+  - name: Lanvin
+  - name: Marni
+  - name: Chloé
+    olx_queries:
+    - Chloe
+    - Chloé
+  - name: Balmain
+  - name: Alexander McQueen
+    olx_queries:
+    - Alexander McQueen
+    - McQueen
+  - name: Moschino
+  - name: Versace
+  - name: Casadei
+  - name: Cesare Paciotti
+  - name: Giuseppe Zanotti
+    olx_queries:
+    - Giuseppe Zanotti
+    - Zanotti
+  - name: Manolo Blahnik
+  - name: Roberto Cavalli
+  - name: Gianmarco Lorenzi
+    olx_queries:
+    - Gianmarco Lorenzi
+    - Гіанмарко Лорензі
+    - Гианмарко Лоренци
+  - name: Ferragamo
+    olx_queries:
+    - Ferragamo
+    - Salvatore Ferragamo
+  - name: Jimmy Choo
+  - name: Saint Laurent
+    priority: true
+    olx_queries:
+    - Saint Laurent
+    - YSL
+    - Yves Saint Laurent
+  - name: Vivienne Westwood
+  - name: Givenchy
+  - name: Burberry
+    priority: true
+  - name: Diesel
+  - name: Dsquared2
+    olx_queries:
+    - Dsquared2
+    - Dsquared
+    - Діскааред
+    - Дискваред
+  - name: Gianvito Rossi
+    olx_queries:
+    - Gianvito Rossi
+    - Гіанвіто Россі
+    - Гианвито Росси
+  - name: Sergio Rossi
+    olx_queries:
+    - Sergio Rossi
+    - Сергіо Россі
+    - Серджио Росси
+  - name: John Fluevog
+    olx_queries:
+    - John Fluevog
+    - Fluevog
+    - Джон Флювог
+    - Жош Флуевог
+  - name: Miu Miu
+    priority: true
+  - name: Hermès
+    priority: true
+    olx_queries:
+    - Hermes
+    - Hermès
+  - name: Christian Louboutin
+    priority: true
+    olx_queries:
+    - Christian Louboutin
+    - Louboutin
+  - name: Alaïa
+    priority: true
+    olx_queries:
+    - Alaia
+    - Alaïa
+  - name: The Row
+    priority: true
+  - name: Maison Margiela
+    priority: true
+    olx_queries:
+    - Maison Margiela
+    - Margiela
+    - Maison Martin Margiela
+  - name: Loewe
+    priority: true
+  - name: Celine
+    priority: true
+    olx_queries:
+    - Celine
+    - Céline
+  - name: Roger Vivier
+    priority: true
+  - name: Loro Piana
+    priority: true
+  - name: Khaite
+    priority: true
+  - name: Tom Ford
+  - name: Balenciaga
+  - name: Tod's
+    olx_queries:
+    - Tod's
+    - Tods
+  - name: Hogan
+  - name: Rene Caovilla
+    olx_queries:
+    - Rene Caovilla
+    - René Caovilla
+  - name: Aquazzura
+  sizes: []
+  min_price_uah: 300
+  max_price_uah: 4000
+  conditions: []
+  include_keywords:
+  - туфл
+  - човник
+  - лодоч
+  - pumps
+  - pump
+  - каблук
+  - підбор
+  - подбор
+  - heel
+  - heels
+  - kitten heel
+  - stiletto
+  - шпильк
+  - шпилька
+  - лофер
+  - loafer
+  - балет
+  - ballerina
+  - ballet
+  - slingback
+  - слінгбек
+  - mary jane
+  - мері джейн
+  - derby
+  - дербі
+  - oxford
+  - оксфорд
+  - броги
+  - brogue
+  - мокасин
+  - moccasin
+  - mule
+  - мюлі
+  - сабо
+  - clogs
+  - tabi
+  - босоніж
+  - босонож
+  - sandal
+  - sandals
+  - чобіт
+  - чобот
+  - сапог
+  - сапоги
+  - boot
+  - boots
+  - напівчоб
+  - полусап
+  - ankle boot
+  - ankle boots
+  - ботильйон
+  - ботильон
+  - ботільйон
+  - bootie
+  - booties
+  exclude_keywords:
+  - кросів
+  - кроссов
+  - sneaker
+  - sneakers
+  - кеди
+  - кеды
+  - trainer
+  - trainers
+  - уггі
+  - угги
+  - ugg
+  - в'єтнам
+  - вьетнам
+  - flip flop
+  - flip-flop
+  - шльоп
+  - шлеп
+  - crocs
+  min_size: 36
+  max_size: 41
+  require_authenticity_keywords: false
+  exclude_conditions:
+  - new
+shafa_brand_ids:
+  Gucci: 696
+  Prada: 416
+resale_profile:
+  target_market: eBay resale
+  authenticity_rule: show all matching luxury-brand listings even if original/authentic is not written
+  condition_rule: everything except listings explicitly marked as new
