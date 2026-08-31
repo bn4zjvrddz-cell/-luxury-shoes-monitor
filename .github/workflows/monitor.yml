@@ -3,7 +3,7 @@ name: Luxury Shoes Monitor
 on:
   workflow_dispatch:
   schedule:
-    - cron: "*/5 * * * *"
+    - cron: "*/15 * * * *"
 
 permissions:
   contents: write
