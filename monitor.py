@@ -1,12 +1,8 @@
 from __future__ import annotations
 
-import asyncio
-import hashlib
-import html as html_lib
 import json
 import logging
 import os
-import random
 import re
 import time
 import unicodedata
@@ -17,18 +13,19 @@ from urllib.parse import urljoin
 import httpx
 import yaml
 from bs4 import BeautifulSoup
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+
 
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "config.yaml"
 STATE_PATH = BASE_DIR / "state.json"
 
-UA = (
-    "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) "
-    "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 "
-    "Mobile/15E148 Safari/604.1"
+PRODUCT_RE = re.compile(
+    r"/(?:uk/)?women/zhenskaya-obuv/[^/]+/(\d{7,})-[^/?#]+",
+    re.I,
 )
 
-# Shafa SEO pages use transliterated brand names.
 SLUG_OVERRIDES = {
     "Dolce & Gabbana": "dolce-gabbana",
     "Louis Vuitton": "louis-vuitton",
@@ -58,66 +55,49 @@ SLUG_OVERRIDES = {
     "Hermès": "hermes",
     "Alaïa": "alaia",
     "Chloé": "chloe",
-    "Celine": "celine",
 }
 
-PRODUCT_RE = re.compile(
-    r"/(?:uk/)?women/zhenskaya-obuv/[^/]+/(\d{7,})-[^/?#]+",
-    re.I,
-)
-
-# Extra footwear words so useful listings aren't missed even if config changes.
-EXTRA_INCLUDE = (
+FOOTWEAR_WORDS = (
     "туфл", "човник", "лодоч", "pump", "підбор", "подбор", "heel",
-    "лофер", "loafer", "балет", "ballerina", "ballet",
-    "slingback", "слінгбек", "mary jane", "мері джейн",
-    "дербі", "derby", "оксфорд", "oxford", "брог", "brogue",
-    "мокасин", "moccasin", "мюлі", "mule", "сабо", "clog",
-    "босоніж", "босонож", "sandal",
-    "чобіт", "чобот", "сапог", "boot", "ботфорт",
-    "напівчоб", "полусап", "ботильйон", "ботильон", "ботільйон",
-    "черевик", "ботин", "ботін", "челсі", "chelsea",
+    "лофер", "loafer", "балет", "ballerina", "ballet", "slingback",
+    "слінгбек", "mary jane", "мері джейн", "дербі", "derby",
+    "оксфорд", "oxford", "брог", "brogue", "мокасин", "moccasin",
+    "мюлі", "mule", "сабо", "clog", "босоніж", "босонож", "sandal",
+    "чобіт", "чобот", "сапог", "boot", "ботфорт", "напівчоб",
+    "полусап", "ботильйон", "ботильон", "ботільйон", "черевик",
+    "ботин", "ботін", "челсі", "chelsea",
 )
 
-EXTRA_EXCLUDE = (
-    "кросів", "кроссов", "sneaker", "кеди", "кеды",
-    "trainer", "уггі", "угги", "ugg", "crocs",
-    "шльоп", "шлеп", "flip flop", "flip-flop", "в'єтнам", "вьетнам",
-)
-
-NEW_MARKERS = (
-    "новий", "нова ", "нові ", "новая", "новые", "новое",
-    "brand new", "new with tags", "нові з бірк", "новые с бирк",
+SPORT_WORDS = (
+    "кросів", "кроссов", "sneaker", "кеди", "кеды", "trainer",
+    "уггі", "угги", "ugg", "crocs", "шльоп", "шлеп", "flip flop",
+    "flip-flop", "в'єтнам", "вьетнам",
 )
 
 
 @dataclass
-class Candidate:
+class Item:
     listing_id: str
     url: str
-    brand: str
     title: str
+    brand: str
     price: int | None
     sizes: list[float]
-    image: str | None
     card_text: str
-    priority: bool = False
+    image: str | None = None
 
 
 class State:
     def __init__(self):
-        self.data = {"seen": {"olx": {}, "shafa": {}}, "meta": {}}
-
+        self.data = {"seen": {"shafa": {}}, "meta": {}}
         if STATE_PATH.exists():
             try:
                 loaded = json.loads(STATE_PATH.read_text(encoding="utf-8"))
                 if isinstance(loaded, dict):
-                    self.data.update(loaded)
+                    self.data = loaded
             except Exception:
-                logging.exception("Could not read state.json")
-
+                logging.exception("Cannot read state.json")
         self.data.setdefault("seen", {})
-        self.data["seen"].setdefault("olx", {})
         self.data["seen"].setdefault("shafa", {})
         self.data.setdefault("meta", {})
 
@@ -135,24 +115,12 @@ class State:
 
     def save(self):
         bucket = self.data["seen"]["shafa"]
-
-        # Prevent state.json growing forever.
         if len(bucket) > 20000:
             self.data["seen"]["shafa"] = dict(
-                sorted(
-                    bucket.items(),
-                    key=lambda kv: kv[1],
-                    reverse=True,
-                )[:20000]
+                sorted(bucket.items(), key=lambda kv: kv[1], reverse=True)[:20000]
             )
-
         STATE_PATH.write_text(
-            json.dumps(
-                self.data,
-                ensure_ascii=False,
-                indent=2,
-                sort_keys=True,
-            ),
+            json.dumps(self.data, ensure_ascii=False, indent=2, sort_keys=True),
             encoding="utf-8",
         )
 
@@ -161,442 +129,262 @@ def load_config() -> dict:
     return yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8"))
 
 
-def normalize_brands(cfg: dict) -> list[dict]:
+def brand_list(cfg: dict) -> list[str]:
     result = []
-
     for item in cfg["filters"].get("brands", []):
         if isinstance(item, str):
             name = item.strip()
-            if name:
-                result.append({"name": name, "priority": False})
-        elif isinstance(item, dict):
+        else:
             name = str(item.get("name", "")).strip()
-            if name:
-                result.append(
-                    {
-                        "name": name,
-                        "priority": bool(item.get("priority", False)),
-                    }
-                )
-
+        if name and name not in result:
+            result.append(name)
     return result
 
 
-def slugify_brand(name: str) -> str:
+def slugify(name: str) -> str:
     if name in SLUG_OVERRIDES:
         return SLUG_OVERRIDES[name]
-
     s = unicodedata.normalize("NFKD", name)
     s = "".join(ch for ch in s if not unicodedata.combining(ch))
-    s = s.lower()
-    s = s.replace("&", " ").replace("'", "").replace("’", "")
-    s = re.sub(r"[^a-z0-9]+", "-", s).strip("-")
-    return s
+    s = s.lower().replace("&", " ").replace("'", "").replace("’", "")
+    return re.sub(r"[^a-z0-9]+", "-", s).strip("-")
 
 
-def current_cycle() -> int:
-    # GitHub Actions automatically increments this for every run.
-    value = os.getenv("GITHUB_RUN_NUMBER", "").strip()
-    if value.isdigit() and int(value) > 0:
-        return int(value)
-
-    return int(time.time() // 300)
-
-
-def extract_price(text: str) -> int | None:
-    m = re.search(r"(\d[\d\s\xa0.,]{0,15})\s*грн", text, re.I)
-
+def parse_price(text: str) -> int | None:
+    m = re.search(r"(\d[\d\s\xa0.,]{0,12})\s*грн", text, re.I)
     if not m:
         return None
-
     digits = re.sub(r"\D", "", m.group(1))
-
     return int(digits) if digits else None
 
 
-def _size_number(token: str) -> float | None:
-    try:
-        value = float(token.replace(",", "."))
-    except ValueError:
-        return None
-
-    return value if 30 <= value <= 46 else None
-
-
-def extract_sizes(card_text: str, title: str) -> list[float]:
-    """
-    Try to read Shafa's size value without confusing review counts with sizes.
-    """
-    result: set[float] = set()
-    compact = re.sub(r"\s+", " ", card_text)
-
-    # Most reliable: EU / UA prefix.
-    for m in re.finditer(
-        r"\b(?:EU|UA)\s*(\d{2}(?:[.,]5)?)\b",
-        compact,
-        re.I,
-    ):
-        value = _size_number(m.group(1))
-        if value is not None:
-            result.add(value)
-
-    # Shafa often renders: "38 і ще 1".
-    for m in re.finditer(
-        r"\b(\d{2}(?:[.,]5)?)\s*(?:і\s+ще|и\s+еще)\b",
-        compact,
-        re.I,
-    ):
-        value = _size_number(m.group(1))
-        if value is not None:
-            result.add(value)
-
-    # Size explicitly mentioned in the listing title.
-    for m in re.finditer(
-        r"(?:розмір|размер|size|р\.?)\s*[:\-]?\s*(\d{2}(?:[.,]5)?)",
-        title,
-        re.I,
-    ):
-        value = _size_number(m.group(1))
-        if value is not None:
-            result.add(value)
-
-    # If there is still no size, inspect only text immediately after the title.
+def parse_sizes(text: str) -> list[float]:
+    result = set()
+    # Prefer explicitly labelled EU/UA sizes.
+    for m in re.finditer(r"\b(?:EU|UA)\s*(\d{2}(?:[.,]5)?)", text, re.I):
+        try:
+            x = float(m.group(1).replace(",", "."))
+        except ValueError:
+            continue
+        if 30 <= x <= 46:
+            result.add(x)
+    # Shafa sometimes omits EU/UA before the first size.
     if not result:
-        low_card = compact.lower()
-        low_title = re.sub(r"\s+", " ", title).lower()
-        pos = low_card.find(low_title)
-
-        if pos >= 0:
-            tail = compact[pos + len(title): pos + len(title) + 90]
-
-            for m in re.finditer(
-                r"(?<!\d)(\d{2}(?:[.,]5)?)(?!\d)",
-                tail,
-            ):
-                value = _size_number(m.group(1))
-                if value is not None:
-                    result.add(value)
+        for m in re.finditer(r"(?<!\d)(3[4-9]|4[0-6])(?:[.,]5)?(?!\d)", text):
+            token = m.group(0).replace(",", ".")
+            try:
+                x = float(token)
+            except ValueError:
+                continue
+            if 30 <= x <= 46:
+                result.add(x)
+                if len(result) >= 4:
                     break
-
     return sorted(result)
 
 
-def nearest_card_text(anchor) -> str:
+def card_text(anchor) -> str:
     node = anchor
     best = re.sub(r"\s+", " ", anchor.get_text(" ", strip=True))
-
-    for _ in range(6):
+    for _ in range(7):
         node = getattr(node, "parent", None)
-
         if node is None:
             break
-
         text = re.sub(r"\s+", " ", node.get_text(" ", strip=True))
-
-        # Product cards are compact. Don't climb into the whole product grid.
-        if len(text) > 1000:
+        if len(text) > 1400:
             break
-
         if "грн" in text.lower():
             best = text
-
     return best
 
 
-def nearest_image(anchor) -> str | None:
+def card_image(anchor) -> str | None:
     node = anchor
-
     for _ in range(6):
         if node is None:
             break
-
         img = node.find("img") if hasattr(node, "find") else None
-
         if img:
-            src = (
-                img.get("src")
-                or img.get("data-src")
-                or img.get("data-lazy-src")
-            )
-
+            src = img.get("src") or img.get("data-src") or img.get("data-lazy-src")
             if not src and img.get("srcset"):
                 src = str(img.get("srcset")).split(",")[0].strip().split(" ")[0]
-
-            if src:
-                return urljoin("https://shafa.ua", src)
-
+            if src and not str(src).startswith("data:"):
+                return urljoin("https://shafa.ua", str(src))
         node = getattr(node, "parent", None)
-
     return None
 
 
-def parse_catalog(
-    html: str,
-    brand: str,
-    priority: bool,
-    limit: int,
-) -> list[Candidate]:
+def parse_brand_page(html: str, brand: str, limit: int = 60) -> list[Item]:
     soup = BeautifulSoup(html, "html.parser")
     items = []
-    used_urls = set()
+    seen = set()
 
     for a in soup.find_all("a", href=True):
         href = str(a.get("href") or "")
         m = PRODUCT_RE.search(href)
-
         if not m:
             continue
 
         url = urljoin("https://shafa.ua", href.split("?")[0])
-
-        if url in used_urls:
+        if url in seen:
             continue
 
-        title = re.sub(
-            r"\s+",
-            " ",
-            a.get_text(" ", strip=True),
-        ).strip()
+        seen.add(url)
+        text = card_text(a)
+        title = re.sub(r"\s+", " ", a.get_text(" ", strip=True)).strip()
+
+        if not title:
+            # Sometimes title is in an image alt.
+            img = a.find("img")
+            if img:
+                title = str(img.get("alt") or "").strip()
 
         if not title:
             continue
 
-        used_urls.add(url)
-        card_text = nearest_card_text(a)
-
         items.append(
-            Candidate(
+            Item(
                 listing_id=m.group(1),
                 url=url,
-                brand=brand,
                 title=title,
-                price=extract_price(card_text),
-                sizes=extract_sizes(card_text, title),
-                image=nearest_image(a),
-                card_text=card_text,
-                priority=priority,
+                brand=brand,
+                price=parse_price(text),
+                sizes=parse_sizes(text),
+                card_text=text,
+                image=card_image(a),
             )
         )
-
         if len(items) >= limit:
             break
 
     return items
 
 
-def desired_footwear(candidate: Candidate, filters: dict) -> bool:
-    text = f"{candidate.title} {candidate.card_text}".lower()
+def matches_card(item: Item, filters: dict) -> bool:
+    text = f"{item.title} {item.card_text}".lower()
 
-    excludes = {
-        str(x).lower()
-        for x in filters.get("exclude_keywords", [])
-    }
-    excludes.update(EXTRA_EXCLUDE)
-
-    if any(word in text for word in excludes):
+    if any(word in text for word in SPORT_WORDS):
         return False
 
-    includes = {
-        str(x).lower()
-        for x in filters.get("include_keywords", [])
-    }
-    includes.update(EXTRA_INCLUDE)
-
-    return any(word in text for word in includes)
-
-
-def price_and_size_match(
-    candidate: Candidate,
-    filters: dict,
-) -> bool:
-    if candidate.price is None:
+    if not any(word in text for word in FOOTWEAR_WORDS):
         return False
 
-    min_price = int(filters.get("min_price_uah", 300))
-    max_price = int(filters.get("max_price_uah", 4000))
-
-    if not min_price <= candidate.price <= max_price:
+    if item.price is None:
         return False
 
-    if not candidate.sizes:
+    if not int(filters.get("min_price_uah", 300)) <= item.price <= int(filters.get("max_price_uah", 4000)):
         return False
 
-    min_size = float(filters.get("min_size", 36))
-    max_size = float(filters.get("max_size", 41))
+    lo = float(filters.get("min_size", 36))
+    hi = float(filters.get("max_size", 41))
 
-    return any(min_size <= size <= max_size for size in candidate.sizes)
+    if not item.sizes or not any(lo <= x <= hi for x in item.sizes):
+        return False
+
+    return True
 
 
 def explicitly_new(detail_text: str, title: str) -> bool:
-    """
-    Exclude only listings that clearly say the condition is new.
-    """
     compact = re.sub(r"\s+", " ", detail_text)
-
-    # Shafa's explicit state field.
     m = re.search(
-        r"(?:стан|состояние)\s*:?\s*(.{0,80}?)"
-        r"(?=(?:розмір|размер|колір|цвет|матеріал|материал|"
-        r"категор|опис|описание|$))",
+        r"(?:стан|состояние)\s*:?\s*(.{0,70}?)"
+        r"(?=(?:колір|цвет|розмір|размер|категор|матеріал|материал|$))",
         compact,
         re.I,
     )
-
     if m:
         state = m.group(1).lower()
-
         if re.search(r"\bнов", state):
             return True
-
-        # Recognised used conditions = not new.
-        if any(
-            marker in state
-            for marker in (
-                "ідеаль",
-                "идеаль",
-                "дуже хорош",
-                "очень хорош",
-                "хорош",
-                "задов",
-                "удов",
-            )
-        ):
+        if any(x in state for x in ("ідеаль", "идеаль", "дуже хорош", "очень хорош", "хорош", "задов", "удов")):
             return False
-
-    # Also catch obvious wording in title.
-    low_title = title.lower()
-
-    return any(marker in low_title for marker in NEW_MARKERS)
-
-
-class WebClient:
-    def __init__(self, timeout: float, delay: float):
-        self.delay = max(0.8, delay)
-
-        self.client = httpx.AsyncClient(
-            timeout=timeout,
-            follow_redirects=True,
-            headers={
-                "User-Agent": UA,
-                "Accept-Language": "uk-UA,uk;q=0.9,en;q=0.8",
-                "Accept": "text/html,application/xhtml+xml",
-            },
-        )
-
-    async def get(self, url: str) -> str:
-        await asyncio.sleep(
-            self.delay + random.uniform(0.15, 0.45)
-        )
-
-        r = await self.client.get(url)
-        r.raise_for_status()
-
-        return r.text
-
-    async def close(self):
-        await self.client.aclose()
+    return bool(re.search(r"\b(нові|новий|нова|новые|новая|новое)\b", title.lower()))
 
 
 class Telegram:
     def __init__(self, token: str, chat_id: str):
         self.base = f"https://api.telegram.org/bot{token}"
         self.chat_id = chat_id
-        self.client = httpx.AsyncClient(timeout=30)
+        self.client = httpx.Client(timeout=30)
 
-    async def send_listing(self, item: Candidate):
-        price = (
-            f"{item.price:,}".replace(",", " ") + " грн"
-            if item.price is not None
-            else "—"
+    def send_text(self, text: str):
+        r = self.client.post(
+            f"{self.base}/sendMessage",
+            data={"chat_id": self.chat_id, "text": text},
         )
+        r.raise_for_status()
 
+    def send_item(self, item: Item, prefix: str = "🆕"):
+        price = f"{item.price:,}".replace(",", " ") + " грн" if item.price else "—"
         sizes = ", ".join(
-            str(int(x)) if x.is_integer()
-            else str(x).replace(".", ",")
+            str(int(x)) if x.is_integer() else str(x).replace(".", ",")
             for x in item.sizes
         )
-
-        hot = "🔥 " if item.priority else ""
-
-        caption = (
-            f"🆕 {hot}<b>SHAFA</b>\n"
-            f"<b>{html_lib.escape(item.title)}</b>\n\n"
-            f"Бренд: {html_lib.escape(item.brand)}\n"
-            f"Ціна: <b>{price}</b>\n"
-            f"Розмір: {html_lib.escape(sizes or '—')}\n\n"
-            f'<a href="{html_lib.escape(item.url, quote=True)}">'
-            f"Відкрити оголошення</a>"
+        text = (
+            f"{prefix} SHAFA\n"
+            f"{item.title}\n\n"
+            f"Бренд: {item.brand}\n"
+            f"Ціна: {price}\n"
+            f"Розмір: {sizes or '—'}\n"
+            f"{item.url}"
         )
-
         if item.image:
-            photo = await self.client.post(
+            r = self.client.post(
                 f"{self.base}/sendPhoto",
                 data={
                     "chat_id": self.chat_id,
                     "photo": item.image,
-                    "caption": caption[:1024],
-                    "parse_mode": "HTML",
+                    "caption": text[:1024],
                 },
             )
-
-            if photo.is_success:
+            if r.is_success:
                 return
-
-        message = await self.client.post(
-            f"{self.base}/sendMessage",
-            data={
-                "chat_id": self.chat_id,
-                "text": caption,
-                "parse_mode": "HTML",
-                "disable_web_page_preview": False,
-            },
-        )
-        message.raise_for_status()
-
-    async def send_text(self, text: str):
-        r = await self.client.post(
+        r = self.client.post(
             f"{self.base}/sendMessage",
             data={
                 "chat_id": self.chat_id,
                 "text": text,
+                "disable_web_page_preview": False,
             },
         )
         r.raise_for_status()
 
-    async def close(self):
-        await self.client.aclose()
+    def close(self):
+        self.client.close()
 
 
-def catalog_urls(brand: str) -> list[str]:
-    slug = slugify_brand(brand)
-
-    # Generic footwear page first. Category fallbacks cover brands for which
-    # Shafa has not generated a generic SEO page.
-    patterns = (
-        f"obuv-{slug}.xhtml",
-        f"tufli-{slug}.xhtml",
-        f"zhenskie-tufli-{slug}.xhtml",
-        f"botinki-{slug}.xhtml",
-        f"sapozhki-{slug}.xhtml",
-        f"bosonozhki-{slug}.xhtml",
-        f"botilony-{slug}.xhtml",
-        f"lofery-{slug}.xhtml",
+def make_driver():
+    options = Options()
+    options.add_argument("--headless=new")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--window-size=1440,1800")
+    options.add_argument("--lang=uk-UA")
+    options.add_argument(
+        "--user-agent=Mozilla/5.0 (X11; Linux x86_64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/132.0.0.0 Safari/537.36"
     )
+    options.page_load_strategy = "eager"
+    driver = webdriver.Chrome(options=options)
+    driver.set_page_load_timeout(18)
+    return driver
 
-    return [
-        f"https://shafa.ua/uk/{path}?sort=4"
-        for path in patterns
-    ]
+
+def load_rendered(driver, url: str, wait: float = 1.4) -> str:
+    driver.get(url)
+    time.sleep(wait)
+    driver.execute_script("window.scrollTo(0, 1200);")
+    time.sleep(0.55)
+    return driver.page_source
 
 
-async def main():
+def main():
     token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
-
     if not token or not chat_id:
-        raise SystemExit(
-            "Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID"
-        )
+        raise SystemExit("Missing TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID")
 
     logging.basicConfig(
         level=logging.INFO,
@@ -605,186 +393,89 @@ async def main():
 
     cfg = load_config()
     filters = cfg["filters"]
-    brands = normalize_brands(cfg)
-
-    per_cycle = max(
-        1,
-        min(
-            len(brands),
-            int(
-                cfg.get("monitor", {})
-                .get("brands_per_cycle", 20)
-            ),
-        ),
-    )
-
-    cycle = current_cycle()
-    start = ((cycle - 1) * per_cycle) % len(brands)
-    batch = [
-        brands[(start + i) % len(brands)]
-        for i in range(per_cycle)
-    ]
+    brands = brand_list(cfg)
 
     state = State()
+    tg = Telegram(token, chat_id)
+    driver = make_driver()
 
-    web = WebClient(
-        timeout=float(
-            cfg.get("monitor", {})
-            .get("timeout_seconds", 20)
-        ),
-        delay=float(
-            cfg.get("monitor", {})
-            .get("request_delay_seconds", 1.0)
-        ),
-    )
+    # First successful browser run sends a few real current matches as a proof,
+    # then normal monitoring switches to new-only.
+    proof_mode = state.get_meta("browser_monitor_proof_done") != "1"
+    proof_left = 5
 
-    telegram = Telegram(token, chat_id)
-
-    max_items = max(
-        40,
-        int(
-            cfg.get("monitor", {})
-            .get("max_items_per_brand", 20)
-        ),
-    )
+    total_products = 0
+    qualifying = 0
 
     try:
-        logging.info(
-            "SHAFA-only cycle %s | brands: %s",
-            cycle,
-            ", ".join(x["name"] for x in batch),
-        )
+        for index, brand in enumerate(brands, start=1):
+            slug = slugify(brand)
+            urls = [
+                f"https://shafa.ua/uk/brands/{slug}/women?sort=4",
+                f"https://shafa.ua/uk/tufli-{slug}.xhtml?sort=4",
+                f"https://shafa.ua/uk/zhenskie-tufli-{slug}.xhtml?sort=4",
+            ]
 
-        for spec in batch:
-            brand = spec["name"]
-            items: list[Candidate] = []
-
-            for url in catalog_urls(brand):
+            items = []
+            for url in urls:
                 try:
-                    page = await web.get(url)
-                    found = parse_catalog(
-                        page,
-                        brand,
-                        spec["priority"],
-                        max_items,
-                    )
-
-                    logging.info(
-                        "Shafa %s | %s | %d products",
-                        brand,
-                        url,
-                        len(found),
-                    )
-
-                    if found:
-                        items = found
+                    html = load_rendered(driver, url)
+                    items = parse_brand_page(html, brand)
+                    logging.info("%s/%s %s -> %s products", index, len(brands), brand, len(items))
+                    if items:
                         break
-
-                except httpx.HTTPStatusError as e:
-                    # Many SEO fallback pages legitimately do not exist.
-                    logging.info(
-                        "Shafa fallback unavailable for %s: %s",
-                        brand,
-                        e.response.status_code,
-                    )
                 except Exception:
-                    logging.exception(
-                        "Shafa catalog failed for %s",
-                        brand,
-                    )
+                    logging.exception("Render failed: %s", url)
 
             if not items:
-                logging.warning(
-                    "No Shafa shoe page found for %s",
-                    brand,
-                )
                 continue
 
-            # Fresh baseline namespace for this rewritten Shafa monitor.
-            baseline_key = (
-                f"shafa_v4_baseline:{brand.lower()}"
-            )
+            total_products += len(items)
 
-            if state.get_meta(baseline_key) != "1":
-                for item in items:
-                    state.mark(item.listing_id)
-
-                state.set_meta(baseline_key, "1")
-
-                logging.info(
-                    "Baseline for %s: %d listings",
-                    brand,
-                    len(items),
-                )
-                continue
-
-            for item in reversed(items):
+            for item in items:
                 if state.has(item.listing_id):
                     continue
 
-                # Mark immediately so an irrelevant new listing
-                # isn't reprocessed forever.
+                # Mark every encountered item once so irrelevant items aren't rechecked.
                 state.mark(item.listing_id)
 
-                if not desired_footwear(item, filters):
+                if not matches_card(item, filters):
                     continue
 
-                if not price_and_size_match(item, filters):
-                    continue
-
+                # Check condition on the rendered listing page.
                 try:
-                    detail_html = await web.get(item.url)
-                    detail_text = "\n".join(
-                        BeautifulSoup(
-                            detail_html,
-                            "html.parser",
-                        ).stripped_strings
+                    detail_html = load_rendered(driver, item.url, wait=0.8)
+                    detail_text = " ".join(
+                        BeautifulSoup(detail_html, "html.parser").stripped_strings
                     )
-
-                    if explicitly_new(
-                        detail_text,
-                        item.title,
-                    ):
-                        logging.info(
-                            "Skipped NEW listing: %s",
-                            item.title,
-                        )
+                    if explicitly_new(detail_text, item.title):
                         continue
-
                 except Exception:
-                    # Don't lose a potentially valuable listing just because
-                    # one detail request temporarily failed.
-                    logging.exception(
-                        "Could not check condition: %s",
-                        item.url,
-                    )
+                    logging.exception("Condition check failed for %s", item.url)
 
-                await telegram.send_listing(item)
+                qualifying += 1
 
-                logging.info(
-                    "SENT: %s | %s | %s грн",
-                    brand,
-                    item.title,
-                    item.price,
-                )
+                if proof_mode and proof_left > 0:
+                    tg.send_item(item, prefix="🧪 TEST")
+                    proof_left -= 1
+                elif not proof_mode:
+                    tg.send_item(item, prefix="🆕")
 
-        # One-time confirmation specifically for the new Shafa version.
-        if state.get_meta("shafa_v4_ready_notified") != "1":
-            await telegram.send_text(
-                "✅ Shafa Monitor активовано.\n"
-                "Фільтри: luxury-бренди, 36–41, 300–4000 грн, "
-                "усе крім явно нового стану.\n"
-                "Перші проходи запам’ятовують поточні оголошення; "
-                "далі надходитимуть нові."
+        if proof_mode:
+            state.set_meta("browser_monitor_proof_done", "1")
+            tg.send_text(
+                f"✅ Перевірка Shafa завершена. "
+                f"Бот побачив {total_products} оголошень у сторінках брендів; "
+                f"під фільтри пройшло {qualifying}. "
+                f"Далі надсилатиму тільки нові."
             )
-            state.set_meta("shafa_v4_ready_notified", "1")
 
         state.save()
 
     finally:
-        await web.close()
-        await telegram.close()
+        driver.quit()
+        tg.close()
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
