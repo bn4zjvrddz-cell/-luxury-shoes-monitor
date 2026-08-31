@@ -1,0 +1,50 @@
+name: Luxury Shoes Monitor
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/15 * * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: luxury-shoes-monitor
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Check OLX and Shafa
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python monitor.py
+
+      - name: Save monitor state
+        if: always()
+        run: |
+          if [ -n "$(git status --porcelain -- state.json)" ]; then
+            git config user.name "luxury-shoes-monitor"
+            git config user.email "actions@users.noreply.github.com"
+            git add state.json
+            git commit -m "Update monitor state [skip ci]"
+            git push
+          else
+            echo "No state changes."
+          fi
