@@ -1,7 +1,11 @@
 {
+  "meta": {
+    "baseline:shafa:gucci": "1",
+    "baseline:shafa:prada": "1",
+    "startup_notified": "1"
+  },
   "seen": {
     "olx": {},
     "shafa": {}
-  },
-  "meta": {}
+  }
 }
